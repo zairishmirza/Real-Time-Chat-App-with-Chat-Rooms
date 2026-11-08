@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>jquery ajax php mysql chatting software</title>
+<style>
+  body { font-family: Arial; max-width: 420px; margin: 30px auto; }
+  .box { height: 350px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; background: #f7f7f7; }
+  .m { margin: 6px 0; padding: 6px 10px; border-radius: 8px; max-width: 75%; clear: both; }
+  .m b, .m small { display: block; font-size: 11px; color: #555; }
+  .m b.uname { color: #1a5fb4; cursor: pointer; text-decoration: underline; }
+  .me   { background: #d1f0c2; float: right; }
+  .them { background: #fff; float: left; border: 1px solid #ddd; }
+  .more { display: block; margin: 0 auto 8px; }
+  .msg  { width: 78%; padding: 6px; }
+  #login input, #login select { padding: 6px; width: 200px; margin-bottom: 10px; }
+
+  /* popup chat windows (bottom-right, side by side) */
+  #popups { position: fixed; bottom: 0; right: 10px; display: flex; gap: 10px; align-items: flex-end; }
+  .popup  { width: 270px; background: #fff; border: 1px solid #999; border-radius: 8px 8px 0 0; box-shadow: 0 0 8px rgba(0,0,0,.3); }
+  .phead  { background: #1a5fb4; color: #fff; padding: 7px 10px; cursor: pointer; display: flex; justify-content: space-between; border-radius: 8px 8px 0 0; }
+  .phead .x { padding: 0 4px; }
+  .popup .panel { padding: 6px; }
+  .popup .box { height: 220px; }
+  .popup .msg { width: 66%; }
+  .popup.collapsed .panel { display: none; }
+</style>
+</head>
+<body>
+<h3>jquery ajax php mysql chatting software</h3>
+
+<div id="login">
+  <input id="me" placeholder="Your username"><br>
+  <select id="mode">
+    <option value="user">One to one chat</option>
+    <option value="room">Chat room</option>
+  </select><br>
+  <input id="target" placeholder="Friend's username"><br>
+  <button id="start">Start chat</button>
+</div>
+
+<div id="chat" style="display:none">
+  <h4 id="title"></h4>
+</div>
+<div id="popups"></div>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script>
+const API = 'api.php';
+let meId, mode, targetId, inboxId = 0, mainChat;
+const popups = {};            // userId -> chat object (this is what keeps each popup unique)
+
+// ---- One chat panel (used for the main chat AND for every popup) ----
+function createPanel(mode, targetId, clickable) {
+  const $el = $('<div class="panel">' +
+      '<div class="box"><button class="more">Load more</button></div>' +
+      '<input class="msg" placeholder="Type and press Enter"> <button class="send">Send</button>' +
+    '</div>');
+  const $box = $el.find('.box'), $more = $el.find('.more'), $msg = $el.find('.msg');
+  const c = { $el, lastId: 0, firstId: 0, force: false, ready: false };
+
+  const params = extra => $.extend({ me_id: meId, mode: mode, target_id: targetId }, extra);
+  const scrollDown = () => $box.scrollTop($box[0].scrollHeight);
+
+  function bubble(m) {
+    const mine = m.sender_id == meId;
+    const $name = $('<b>').text(m.sender);
+    if (clickable && !mine) {                       // in a room: other users' names are clickable
+      $name.addClass('uname').attr('title', 'Chat privately')
+           .click(() => openPopup(m.sender_id, m.sender));
+    }
+    return $('<div class="m">').addClass(mine ? 'me' : 'them')
+      .append($name).append($('<span>').text(m.message)).append($('<small>').text(m.created_at));
+  }
+
+  c.loadOld = function (done) {                     // latest 10, then older ones on "Load more"
+    const initial = (c.firstId === 0 && c.lastId === 0);
+    $.getJSON(API, params({ action: 'old', before: c.firstId }), function (res) {
+      if (res.length < 10) $more.hide();
+      if (res.length) {
+        const oldHeight = $box[0].scrollHeight;
+        for (let i = res.length - 1; i >= 0; i--) $more.after(bubble(res[i]));
+        c.firstId = res[0].id;
+        if (c.lastId === 0) c.lastId = res[res.length - 1].id;
+        if (initial) scrollDown(); else $box.scrollTop($box[0].scrollHeight - oldHeight);
+      }
+      c.ready = true;
+      if (done) done();
+    });
+  };
+
+  c.poll = function () {                            // only messages newer than lastId
+    if (!c.ready) return;
+    $.getJSON(API, params({ action: 'new', after: c.lastId }), function (res) {
+      if (!res.length) return;
+      const nearBottom = $box[0].scrollHeight - $box.scrollTop() - $box.innerHeight() < 60;
+      res.forEach(m => { $box.append(bubble(m)); c.lastId = m.id; if (!c.firstId) c.firstId = m.id; });
+      if (nearBottom || c.force) { scrollDown(); c.force = false; }
+    });
+  };
+
+  function send() {
+    const text = $msg.val().trim();
+    if (!text) return;
+    $.post(API, params({ action: 'send', message: text }), function (r) {
+      if (r.ok) { $msg.val(''); c.force = true; c.poll(); }
+    }, 'json');
+  }
+  $el.find('.send').click(send);
+  $msg.on('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); send(); } });  // key event
+
+  return c;
+}
+
+// ---- Popup: one window per user. If it is already open, just focus it. ----
+function openPopup(userId, name) {
+  if (popups[userId]) {                             // unique: no duplicate window
+    popups[userId].$win.removeClass('collapsed').find('.msg').focus();
+    return;
+  }
+  const c = createPanel('user', userId, false);
+  const $win = $('<div class="popup">')
+    .append($('<div class="phead">').append($('<span>').text(name)).append('<span class="x">&times;</span>'))
+    .append(c.$el);
+  c.$win = $win;
+  popups[userId] = c;
+  $('#popups').append($win);
+
+  $win.find('.phead').click(() => $win.toggleClass('collapsed'));              // click header = collapse
+  $win.find('.x').click(e => { e.stopPropagation(); delete popups[userId]; $win.remove(); });  // close
+  c.loadOld(() => $win.find('.msg').focus());
+}
+
+// ---- One timer polls the main chat, every open popup, and the inbox ----
+function tick() {
+  mainChat.poll();
+  $.each(popups, (id, c) => c.poll());
+  // someone sent me a private message: open a popup for them if it is not open yet
+  $.getJSON(API, { action: 'inbox', me_id: meId, after: inboxId }, function (res) {
+    res.forEach(m => {
+      inboxId = m.id;
+      const isMainChat = (mode === 'user' && m.sender_id == targetId);
+      if (!popups[m.sender_id] && !isMainChat) openPopup(m.sender_id, m.sender);
+    });
+  });
+}
+
+// ---- Start screen ----
+$('#mode').change(function () {
+  $('#target').attr('placeholder', this.value === 'room' ? 'Room name' : "Friend's username");
+});
+
+$('#start').click(function () {
+  const me = $('#me').val().trim(), target = $('#target').val().trim();
+  mode = $('#mode').val();
+  $.post(API, { action: 'start', username: me, mode: mode, target: target }, function (r) {
+    if (!r.ok) return alert(r.error);
+    meId = r.me_id; targetId = r.target_id; inboxId = r.inbox_id;
+    $('#title').text(mode === 'room' ? 'Room: ' + target + ' (click a username to chat privately)' : 'Chat with ' + target);
+    mainChat = createPanel(mode, targetId, mode === 'room');
+    $('#login').hide(); $('#chat').show().append(mainChat.$el);
+    mainChat.loadOld(() => { mainChat.$el.find('.msg').focus(); setInterval(tick, 2000); });
+  }, 'json');
+});
+</script>
+</body>
+</html>
